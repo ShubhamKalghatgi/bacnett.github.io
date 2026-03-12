@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Live CO2 Monitor</title>
+    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        .transition-all { transition: all 0.5s ease; }
+    </style>
+</head>
+<body class="bg-slate-900 text-white min-h-screen flex items-center justify-center p-4">
+
+    <div class="max-w-md w-full bg-slate-800 rounded-3xl p-8 shadow-2xl border border-slate-700">
+        <div class="flex justify-between items-center mb-8">
+            <h1 class="text-xl font-bold tracking-tight">Room 1 Sensor</h1>
+            <div id="connection-status" class="flex items-center text-xs text-red-400">
+                <span class="w-2 h-2 rounded-full bg-red-400 mr-2 animate-pulse"></span>
+                Disconnected
+            </div>
+        </div>
+
+        <div class="text-center py-10">
+            <div id="gauge-container" class="inline-block p-1 rounded-full bg-slate-700 mb-4 transition-all">
+                <div class="bg-slate-900 rounded-full w-48 h-48 flex flex-col items-center justify-center border-4 border-slate-600 transition-all" id="gauge-border">
+                    <span id="co2-value" class="text-5xl font-black text-white">--</span>
+                    <span class="text-slate-500 font-medium">PPM</span>
+                </div>
+            </div>
+            
+            <p id="status-text" class="text-lg font-semibold text-slate-400 mt-4 italic">Waiting for data...</p>
+        </div>
+
+        <div class="mt-6 pt-6 border-t border-slate-700">
+            <div class="flex justify-between text-sm text-slate-400">
+                <span>Min: 400</span>
+                <span>Threshold: 800</span>
+                <span>Max: 1200</span>
+            </div>
+            <div class="w-full bg-slate-700 h-2 rounded-full mt-2 overflow-hidden">
+                <div id="progress-bar" class="bg-blue-500 h-full w-0 transition-all duration-1000"></div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Connect to the Python server
+        const socket = io('http://localhost:5000');
+        
+        const valueDisplay = document.getElementById('co2-value');
+        const statusText = document.getElementById('status-text');
+        const connStatus = document.getElementById('connection-status');
+        const progressBar = document.getElementById('progress-bar');
+        const gaugeBorder = document.getElementById('gauge-border');
+
+        socket.on('connect', () => {
+            connStatus.innerHTML = '<span class="w-2 h-2 rounded-full bg-green-500 mr-2"></span>Connected';
+            connStatus.classList.replace('text-red-400', 'text-green-400');
+        });
+
+        socket.on('disconnect', () => {
+            connStatus.innerHTML = '<span class="w-2 h-2 rounded-full bg-red-400 mr-2 animate-pulse"></span>Disconnected';
+            connStatus.classList.replace('text-green-400', 'text-red-400');
+        });
+
+        socket.on('co2_update', (data) => {
+            // Update Number
+            valueDisplay.innerText = data.value;
+            statusText.innerText = data.message;
+
+            // Update Progress Bar % (scaled 400-1200 to 0-100)
+            const percent = ((data.value - 400) / (1200 - 400)) * 100;
+            progressBar.style.width = Math.min(Math.max(percent, 0), 100) + '%';
+
+            // Update Colors based on status
+            if (data.status === 'danger') {
+                gaugeBorder.style.borderColor = '#ef4444'; // Red
+                progressBar.style.backgroundColor = '#ef4444';
+                statusText.classList.add('text-red-400');
+                statusText.classList.remove('text-green-400');
+            } else {
+                gaugeBorder.style.borderColor = '#22c55e'; // Green
+                progressBar.style.backgroundColor = '#3b82f6'; // Blue
+                statusText.classList.add('text-green-400');
+                statusText.classList.remove('text-red-400');
+            }
+        });
+    </script>
+</body>
+</html>
