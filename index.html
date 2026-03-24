@@ -3,89 +3,1010 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Live CO2 Monitor</title>
-    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+    <title>AuraNode | AHU Controller</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Rajdhani:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
-        .transition-all { transition: all 0.5s ease; }
+        :root {
+            /* Schneider Electric palette */
+            --bg: #f5f5f5; --panel: #ffffff; --card: #ffffff;
+            --border: #e0e0e0; --accent: #3DCD58; --accent2: #2db34a;
+            --green: #3DCD58; --green-light: #d6f5dc; --green-mid: #3DCD58;
+            --green-dark: #1a7a30; --green-muted: #7ddc93;
+            --yellow: #e6a817; --red: #e2001a;
+            --text: #1a1a1a; --dim: #757575;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { background: var(--bg); font-family: 'Rajdhani', sans-serif; color: var(--text); min-height: 100vh; overflow-x: hidden; }
+        body::before { content: ''; position: fixed; inset: 0; background: radial-gradient(ellipse at 20% 50%, rgba(61,205,88,0.04) 0%, transparent 60%), radial-gradient(ellipse at 80% 20%, rgba(61,205,88,0.03) 0%, transparent 50%); pointer-events: none; }
+
+        /* LAYOUT */
+        .app { display: grid; grid-template-rows: 60px 1fr; grid-template-columns: 260px 1fr; height: 100vh; }
+        header { grid-column: 1/-1; display: flex; align-items: center; padding: 0 24px; background: var(--panel); border-bottom: 2px solid var(--accent); gap: 16px; z-index: 10; box-shadow: 0 2px 8px rgba(0,0,0,0.06); }
+        .sidebar { background: var(--panel); border-right: 1px solid var(--border); padding: 16px; overflow-y: auto; box-shadow: 2px 0 6px rgba(0,0,0,0.04); }
+        .main { overflow-y: auto; padding: 20px; display: flex; flex-direction: column; gap: 16px; }
+
+        /* HEADER */
+        .logo { font-size: 22px; font-weight: 700; color: var(--text); letter-spacing: 2px; }
+        .logo span { color: var(--accent); font-weight: 700; }
+        .header-tag { font-family: 'Share Tech Mono', monospace; font-size: 10px; color: var(--accent2); background: rgba(61,205,88,0.08); border: 1px solid #c2edca; padding: 3px 10px; border-radius: 3px; margin-left: auto; }
+        .status-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 8px rgba(61,205,88,0.6); animation: pulse 2s infinite; }
+        @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+
+        /* SIDEBAR */
+        .s-section { margin-bottom: 20px; }
+        .s-label { font-size: 9px; letter-spacing: 3px; color: var(--dim); text-transform: uppercase; margin-bottom: 10px; padding-bottom: 6px; border-bottom: 1px solid var(--border); }
+        .kpi { display: flex; justify-content: space-between; align-items: baseline; padding: 8px 0; border-bottom: 1px solid var(--border); }
+        .kpi-name { font-size: 11px; color: var(--dim); }
+        .kpi-val { font-family: 'Share Tech Mono', monospace; font-size: 18px; font-weight: 700; }
+        .kpi-unit { font-size: 10px; color: var(--dim); margin-left: 2px; }
+        .kpi-val.hot { color: var(--red); }
+        .kpi-val.ok { color: var(--accent); }
+        .kpi-val.warm { color: var(--yellow); }
+
+        /* SOO LOG */
+        .soo-log { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 10px; height: 200px; overflow-y: auto; font-family: 'Share Tech Mono', monospace; font-size: 9px; }
+        .soo-log::-webkit-scrollbar { width: 3px; }
+        .soo-log::-webkit-scrollbar-thumb { background: #c8c8c8; }
+        .log-line { margin-bottom: 4px; line-height: 1.5; }
+        .log-line.info { color: #2db34a; }
+        .log-line.action { color: var(--green-dark); }
+        .log-line.warn { color: var(--yellow); }
+        .log-line.error { color: var(--red); }
+
+        /* AHU DIAGRAM */
+        .ahu-canvas { background: #ffffff; border: 1px solid var(--border); border-radius: 10px; padding: 20px; position: relative; box-shadow: 0 1px 8px rgba(0,0,0,0.05); }
+        .ahu-title { font-size: 10px; letter-spacing: 3px; color: var(--dim); text-transform: uppercase; margin-bottom: 16px; }
+
+        svg.ahu-svg { width: 100%; height: 560px; }
+
+        /* Speed bar styles */
+        .speed-bar-bg { fill: #e0e0e0; rx: 2; }
+        .speed-bar-fill { fill: #3DCD58; transition: width 0.5s; }
+        .speed-bar-fill.red { fill: #e2001a; }
+        .damper-bar-bg { fill: #e0e0e0; }
+        .damper-bar-fill { fill: #3DCD58; transition: height 0.5s; }
+
+        /* COMPONENT STYLES */
+        .duct { fill: none; stroke: #e8f8ec; stroke-width: 20; stroke-linecap: round; }
+        .duct-air { stroke-dasharray: 8 6; stroke-width: 2; fill: none; animation: flowAnim 1.5s linear infinite; }
+        @keyframes flowAnim { to { stroke-dashoffset: -28; } }
+        .duct-air.outside { stroke: #3DCD58; }
+        .duct-air.return { stroke: #2db34a; }
+        .duct-air.relief { stroke: #7ddc93; }
+        .duct-air.supply { stroke: #1a7a30; }
+        .duct-air.mixed { stroke: #3DCD58; }
+        .duct-air.exhaust { stroke: #e2001a; animation-direction: reverse; }
+
+        .comp-box { fill: #f5f5f5; stroke: var(--border); stroke-width: 1.5; rx: 4; ry: 4; }
+        .comp-box.active { stroke: var(--accent); filter: drop-shadow(0 0 5px rgba(61,205,88,0.35)); }
+        .comp-box.warm-active { stroke: var(--accent2); filter: drop-shadow(0 0 5px rgba(61,205,88,0.25)); }
+        .comp-label { font-family: 'Rajdhani', sans-serif; font-size: 10px; font-weight: 600; fill: var(--text); letter-spacing: 0.5px; }
+        .comp-sublabel { font-family: 'Share Tech Mono', monospace; font-size: 8px; fill: var(--dim); }
+        .comp-value { font-family: 'Share Tech Mono', monospace; font-size: 9px; fill: var(--accent2); font-weight: 700; }
+
+        /* Damper visual */
+        .damper-blade { stroke-width: 2.5; stroke-linecap: round; transition: all 0.5s; }
+
+        /* Fan circle */
+        .fan-circle { fill: none; stroke: var(--border); stroke-width: 1.5; }
+        .fan-blade { stroke-width: 2; stroke-linecap: round; transform-origin: center; }
+        .fan-spinning .fan-blade { animation: spinFan 0.4s linear infinite; }
+        @keyframes spinFan { to { transform: rotate(360deg); } }
+
+        /* Filter */
+        .filter-line { stroke: var(--accent); stroke-width: 2; opacity: 0.7; }
+
+        /* Status indicators */
+        .status-circle { r: 4; }
+
+        /* METRICS GRID */
+        .metrics-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+        .metric-card { background: #ffffff; border: 1px solid var(--border); border-radius: 8px; padding: 14px; position: relative; overflow: hidden; box-shadow: 0 1px 4px rgba(0,0,0,0.05); }
+        .metric-card::before { content: ''; position: absolute; top: 0; left: 0; right: 0; height: 3px; }
+        .metric-card.blue::before { background: var(--accent); }
+        .metric-card.orange::before { background: var(--accent2); }
+        .metric-card.green::before { background: var(--accent); }
+        .metric-card.yellow::before { background: var(--yellow); }
+        .metric-name { font-size: 9px; letter-spacing: 2px; color: var(--dim); text-transform: uppercase; margin-bottom: 6px; }
+        .metric-val { font-family: 'Share Tech Mono', monospace; font-size: 28px; font-weight: 700; line-height: 1; }
+        .metric-val.blue { color: var(--accent2); }
+        .metric-val.orange { color: var(--accent); }
+        .metric-val.green { color: var(--accent); }
+        .metric-val.yellow { color: var(--yellow); }
+        .metric-unit { font-size: 11px; color: var(--dim); margin-left: 3px; }
+        .metric-sub { font-size: 10px; color: var(--dim); margin-top: 4px; }
+
+        /* SEQUENCE PANEL */
+        .seq-panel { background: #ffffff; border: 1px solid var(--border); border-radius: 10px; padding: 16px; box-shadow: 0 1px 4px rgba(0,0,0,0.05); }
+        .seq-steps { display: flex; gap: 0; overflow-x: auto; padding-bottom: 8px; }
+        .seq-step { flex: 0 0 auto; width: 130px; position: relative; }
+        .seq-step:not(:last-child)::after { content: '→'; position: absolute; right: -10px; top: 50%; transform: translateY(-50%); color: var(--dim); font-size: 14px; }
+        .seq-box { border: 1px solid var(--border); border-radius: 6px; padding: 10px 8px; margin: 0 12px 0 0; font-size: 10px; text-align: center; transition: all 0.3s; cursor: default; background: var(--bg); }
+        .seq-box.active-step { border-color: var(--accent); background: rgba(61,205,88,0.08); color: var(--green-dark); }
+        .seq-box.done-step { border-color: #c2edca; background: rgba(61,205,88,0.06); color: var(--accent2); }
+        .seq-box.pending-step { color: var(--dim); }
+        .seq-num { font-family: 'Share Tech Mono', monospace; font-size: 18px; font-weight: 700; display: block; margin-bottom: 4px; }
+        .seq-desc { font-size: 9px; line-height: 1.4; }
+
+        /* CONTROLS */
+        .ctrl-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+        .ctrl-card { background: #ffffff; border: 1px solid var(--border); border-radius: 8px; padding: 12px; box-shadow: 0 1px 4px rgba(0,0,0,0.04); }
+        .ctrl-name { font-size: 9px; letter-spacing: 2px; color: var(--dim); margin-bottom: 8px; text-transform: uppercase; }
+        .ctrl-slider { width: 100%; accent-color: var(--accent); }
+        .ctrl-val { font-family: 'Share Tech Mono', monospace; font-size: 14px; color: var(--accent2); margin-top: 4px; }
+
+        /* Scrollbar */
+        ::-webkit-scrollbar { width: 4px; height: 4px; }
+        ::-webkit-scrollbar-track { background: var(--bg); }
+        ::-webkit-scrollbar-thumb { background: #c8c8c8; border-radius: 2px; }
     </style>
 </head>
-<body class="bg-slate-900 text-white min-h-screen flex items-center justify-center p-4">
+<body>
+<div class="app">
+    <!-- HEADER -->
+    <header>
+        <div class="status-dot"></div>
+        <div class="logo">AuraNode <span>BMS</span></div>
+        <div style="width:1px;height:30px;background:var(--border);margin:0 8px"></div>
+        <div style="font-size:13px;color:var(--dim)">Air Handling Unit — <span style="color:var(--text)">AHU-01 Controller</span></div>
+        <div class="header-tag">PROTOCOL: MQTT + BACnet/IP</div>
+        <div id="clock" style="font-family:'Share Tech Mono',monospace;font-size:11px;color:var(--dim);margin-left:16px"></div>
+    </header>
 
-    <div class="max-w-md w-full bg-slate-800 rounded-3xl p-8 shadow-2xl border border-slate-700">
-        <div class="flex justify-between items-center mb-8">
-            <h1 class="text-xl font-bold tracking-tight">Room 1 Sensor</h1>
-            <div id="connection-status" class="flex items-center text-xs text-red-400">
-                <span class="w-2 h-2 rounded-full bg-red-400 mr-2 animate-pulse"></span>
-                Disconnected
+    <!-- SIDEBAR -->
+    <aside class="sidebar">
+        <div class="s-section">
+            <div class="s-label">Live Telemetry</div>
+            <div class="kpi">
+                <span class="kpi-name">Outside Air Temp</span>
+                <span><span class="kpi-val hot" id="s-oat">35.0</span><span class="kpi-unit">°C</span></span>
+            </div>
+            <div class="kpi">
+                <span class="kpi-name">Mixed Air Temp</span>
+                <span><span class="kpi-val warm" id="s-mat">32.0</span><span class="kpi-unit">°C</span></span>
+            </div>
+            <div class="kpi">
+                <span class="kpi-name">Supply Air Temp</span>
+                <span><span class="kpi-val ok" id="s-sat">14.5</span><span class="kpi-unit">°C</span></span>
+            </div>
+            <div class="kpi">
+                <span class="kpi-name">Return Air Temp</span>
+                <span><span class="kpi-val warn" id="s-rat">28.5</span><span class="kpi-unit">°C</span></span>
+            </div>
+            <div class="kpi">
+                <span class="kpi-name">Space Temp</span>
+                <span><span class="kpi-val" id="s-space" style="color:var(--yellow)">35.0</span><span class="kpi-unit">°C</span></span>
+            </div>
+            <div class="kpi">
+                <span class="kpi-name">Setpoint</span>
+                <span><span class="kpi-val" style="color:var(--green)">25.0</span><span class="kpi-unit">°C</span></span>
             </div>
         </div>
 
-        <div class="text-center py-10">
-            <div id="gauge-container" class="inline-block p-1 rounded-full bg-slate-700 mb-4 transition-all">
-                <div class="bg-slate-900 rounded-full w-48 h-48 flex flex-col items-center justify-center border-4 border-slate-600 transition-all" id="gauge-border">
-                    <span id="co2-value" class="text-5xl font-black text-white">--</span>
-                    <span class="text-slate-500 font-medium">PPM</span>
-                </div>
-            </div>
-            
-            <p id="status-text" class="text-lg font-semibold text-slate-400 mt-4 italic">Waiting for data...</p>
+        <div class="s-section">
+            <div class="s-label">Damper Positions</div>
+            <div class="kpi"><span class="kpi-name">OA Damper</span><span class="kpi-val" id="s-oad" style="color:#3DCD58">20</span><span class="kpi-unit">%</span></div>
+            <div class="kpi"><span class="kpi-name">RA Damper</span><span class="kpi-val" id="s-rad" style="color:#2db34a">80</span><span class="kpi-unit">%</span></div>
+            <div class="kpi"><span class="kpi-name">Relief Damper</span><span class="kpi-val" id="s-reld" style="color:#7ddc93">20</span><span class="kpi-unit">%</span></div>
+            <div class="kpi"><span class="kpi-name">Supply Fan Speed</span><span class="kpi-val" id="s-sfs" style="color:#1a7a30">100</span><span class="kpi-unit">%</span></div>
+            <div class="kpi"><span class="kpi-name">Return Fan Speed</span><span class="kpi-val" id="s-rfs" style="color:#2db34a">90</span><span class="kpi-unit">%</span></div>
         </div>
 
-        <div class="mt-6 pt-6 border-t border-slate-700">
-            <div class="flex justify-between text-sm text-slate-400">
-                <span>Min: 400</span>
-                <span>Threshold: 800</span>
-                <span>Max: 1200</span>
+        <div class="s-section">
+            <div class="s-label">Sequence Log</div>
+            <div class="soo-log" id="soo-log"></div>
+        </div>
+    </aside>
+
+    <!-- MAIN -->
+    <main class="main">
+        <!-- METRICS -->
+        <div class="metrics-grid">
+            <div class="metric-card blue">
+                <div class="metric-name">Space Temperature</div>
+                <div><span class="metric-val blue" id="m-space">35.0</span><span class="metric-unit">°C</span></div>
+                <div class="metric-sub">Setpoint: 25.0°C</div>
             </div>
-            <div class="w-full bg-slate-700 h-2 rounded-full mt-2 overflow-hidden">
-                <div id="progress-bar" class="bg-blue-500 h-full w-0 transition-all duration-1000"></div>
+            <div class="metric-card orange">
+                <div class="metric-name">Outside Air Temp</div>
+                <div><span class="metric-val orange" id="m-oat">35.0</span><span class="metric-unit">°C</span></div>
+                <div class="metric-sub" id="m-oat-sub">Economiser: OFF</div>
+            </div>
+            <div class="metric-card green">
+                <div class="metric-name">Supply Air Temp</div>
+                <div><span class="metric-val green" id="m-sat">14.5</span><span class="metric-unit">°C</span></div>
+                <div class="metric-sub">Cooling coil active</div>
+            </div>
+            <div class="metric-card yellow">
+                <div class="metric-name">CO₂ Level</div>
+                <div><span class="metric-val yellow" id="m-co2">650</span><span class="metric-unit">ppm</span></div>
+                <div class="metric-sub" id="m-co2-sub">Air quality: Good</div>
             </div>
         </div>
-    </div>
 
-    <script>
-        // Connect to the Python server
-        const socket = io('http://localhost:5000');
-        
-        const valueDisplay = document.getElementById('co2-value');
-        const statusText = document.getElementById('status-text');
-        const connStatus = document.getElementById('connection-status');
-        const progressBar = document.getElementById('progress-bar');
-        const gaugeBorder = document.getElementById('gauge-border');
+        <!-- AHU DIAGRAM -->
+        <div class="ahu-canvas">
+            <div class="ahu-title">Air Handling Unit — Schematic Flow Diagram</div>
+            <svg class="ahu-svg" viewBox="0 0 1100 560" xmlns="http://www.w3.org/2000/svg">
+                <defs>
+                    <marker id="arr-grn" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto"><path d="M0,0 L0,6 L6,3 z" fill="#3DCD58"/></marker>
+                    <marker id="arr-blu" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto"><path d="M0,0 L0,6 L6,3 z" fill="#1a6bab"/></marker>
+                    <marker id="arr-red" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto"><path d="M0,0 L0,6 L6,3 z" fill="#e2001a"/></marker>
+                    <marker id="arr-orn" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto"><path d="M0,0 L0,6 L6,3 z" fill="#e67e22"/></marker>
+                    <marker id="arr-gry" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto"><path d="M0,0 L0,6 L6,3 z" fill="#757575"/></marker>
+                    <filter id="glow-grn"><feGaussianBlur stdDeviation="3" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+                    <filter id="glow-blu"><feGaussianBlur stdDeviation="3" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+                    <filter id="glow-red"><feGaussianBlur stdDeviation="3" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+                </defs>
 
-        socket.on('connect', () => {
-            connStatus.innerHTML = '<span class="w-2 h-2 rounded-full bg-green-500 mr-2"></span>Connected';
-            connStatus.classList.replace('text-red-400', 'text-green-400');
+                <!-- ================================================================ -->
+                <!-- BACKGROUND PANELS                                                 -->
+                <!-- ================================================================ -->
+                <!-- Main AHU box -->
+                <rect x="220" y="190" width="460" height="170" fill="#f0faf2" stroke="#3DCD58" stroke-width="2" rx="6"/>
+                <text x="440" y="184" text-anchor="middle" font-family="Rajdhani" font-size="11" fill="#1a7a30" font-weight="700" letter-spacing="1">AIR HANDLING UNIT — AHU-01</text>
+
+                <!-- Cold Water Loop box (top center) -->
+                <rect x="290" y="18" width="330" height="110" fill="#e8f4fd" stroke="#1a6bab" stroke-width="1.5" rx="6"/>
+                <text x="455" y="12" text-anchor="middle" font-family="Rajdhani" font-size="10" fill="#1a6bab" font-weight="700">COLD WATER LOOP</text>
+
+                <!-- Hot Water Loop box (right) -->
+                <rect x="950" y="280" width="140" height="110" fill="#fff3e8" stroke="#e67e22" stroke-width="1.5" rx="6"/>
+                <text x="1020" y="274" text-anchor="middle" font-family="Rajdhani" font-size="10" fill="#e67e22" font-weight="700">HOT WATER LOOP</text>
+
+                <!-- ================================================================ -->
+                <!-- COLD WATER LOOP: Cooling Tower Fan → Chiller → Pump            -->
+                <!-- ================================================================ -->
+                <!-- Cooling Tower Fan -->
+                <g id="ct-fan">
+                    <rect x="300" y="28" width="70" height="55" fill="#d6eaf8" stroke="#1a6bab" stroke-width="1.5" rx="4"/>
+                    <text x="335" y="24" text-anchor="middle" font-family="Rajdhani" font-size="8" fill="#1a6bab" font-weight="700">COOLING TOWER</text>
+                    <circle cx="335" cy="53" r="16" fill="#bcd6ea" stroke="#1a6bab" stroke-width="1"/>
+                    <g id="ct-fan-blades" style="transform-origin:335px 53px">
+                        <line x1="335" y1="39" x2="335" y2="47" stroke="#1a6bab" stroke-width="2.5" stroke-linecap="round"/>
+                        <line x1="335" y1="59" x2="335" y2="67" stroke="#1a6bab" stroke-width="2.5" stroke-linecap="round"/>
+                        <line x1="321" y1="53" x2="329" y2="53" stroke="#1a6bab" stroke-width="2.5" stroke-linecap="round"/>
+                        <line x1="341" y1="53" x2="349" y2="53" stroke="#1a6bab" stroke-width="2.5" stroke-linecap="round"/>
+                        <line x1="325" y1="43" x2="331" y2="49" stroke="#1a6bab" stroke-width="2" stroke-linecap="round"/>
+                        <line x1="339" y1="57" x2="345" y2="63" stroke="#1a6bab" stroke-width="2" stroke-linecap="round"/>
+                        <line x1="345" y1="43" x2="339" y2="49" stroke="#1a6bab" stroke-width="2" stroke-linecap="round"/>
+                        <line x1="331" y1="57" x2="325" y2="63" stroke="#1a6bab" stroke-width="2" stroke-linecap="round"/>
+                    </g>
+                    <circle cx="335" cy="53" r="4" fill="#1a6bab" opacity="0.5"/>
+                    <text x="335" y="92" text-anchor="middle" font-family="Share Tech Mono" font-size="7" fill="#1a6bab">FAN</text>
+                </g>
+
+                <!-- Chiller -->
+                <g id="chiller">
+                    <rect x="385" y="28" width="100" height="55" fill="#d6eaf8" stroke="#1a6bab" stroke-width="1.5" rx="4"/>
+                    <text x="435" y="24" text-anchor="middle" font-family="Rajdhani" font-size="9" fill="#1a6bab" font-weight="700">CHILLER CH-1</text>
+                    <!-- Chiller body detail -->
+                    <ellipse cx="415" cy="55" rx="18" ry="12" fill="#bcd6ea" stroke="#1a6bab" stroke-width="1"/>
+                    <ellipse cx="455" cy="55" rx="18" ry="12" fill="#bcd6ea" stroke="#1a6bab" stroke-width="1"/>
+                    <line x1="397" y1="55" x2="473" y2="55" stroke="#1a6bab" stroke-width="1" stroke-dasharray="3 3"/>
+                    <text x="435" y="88" text-anchor="middle" font-family="Share Tech Mono" font-size="7" fill="#1a6bab">ACTIVE</text>
+                </g>
+
+                <!-- CW Pump -->
+                <g id="cw-pump">
+                    <circle cx="535" cy="55" r="22" fill="#d6eaf8" stroke="#1a6bab" stroke-width="1.5"/>
+                    <text x="535" y="24" text-anchor="middle" font-family="Rajdhani" font-size="9" fill="#1a6bab" font-weight="700">PUMP</text>
+                    <g id="cwp-blades" style="transform-origin:535px 55px">
+                        <path d="M535,42 Q543,48 535,55 Q527,48 535,42" fill="#1a6bab" opacity="0.7"/>
+                        <path d="M548,55 Q542,63 535,55 Q542,47 548,55" fill="#1a6bab" opacity="0.7"/>
+                        <path d="M535,68 Q527,62 535,55 Q543,62 535,68" fill="#1a6bab" opacity="0.5"/>
+                        <path d="M522,55 Q528,47 535,55 Q528,63 522,55" fill="#1a6bab" opacity="0.5"/>
+                    </g>
+                    <circle cx="535" cy="55" r="5" fill="#1a6bab"/>
+                    <text x="535" y="88" text-anchor="middle" font-family="Share Tech Mono" font-size="7" fill="#1a6bab">CWP</text>
+                </g>
+
+                <!-- Cold water pipe down from chiller/pump to cooling coil -->
+                <line x1="435" y1="83" x2="435" y2="192" stroke="#1a6bab" stroke-width="3" stroke-dasharray="6 4"/>
+                <line x1="435" y1="83" x2="435" y2="130" stroke="#1a6bab" stroke-width="1.5" stroke-dasharray="5 4" class="duct-air" style="animation-duration:1s;stroke:#1a6bab"/>
+                <text x="447" y="145" font-family="Share Tech Mono" font-size="7" fill="#1a6bab">CHW</text>
+                <!-- Cold water return pipe -->
+                <line x1="455" y1="83" x2="455" y2="192" stroke="#3DCD58" stroke-width="2" stroke-dasharray="4 4" opacity="0.7"/>
+
+                <!-- ================================================================ -->
+                <!-- HOT WATER LOOP: Pump + Boiler symbol                            -->
+                <!-- ================================================================ -->
+                <g id="hw-pump">
+                    <circle cx="1000" cy="320" r="22" fill="#fde8d8" stroke="#e67e22" stroke-width="1.5"/>
+                    <text x="1000" y="290" text-anchor="middle" font-family="Rajdhani" font-size="9" fill="#e67e22" font-weight="700">PUMP</text>
+                    <g id="hwp-blades" style="transform-origin:1000px 320px">
+                        <path d="M1000,307 Q1008,313 1000,320 Q992,313 1000,307" fill="#e67e22" opacity="0.7"/>
+                        <path d="M1013,320 Q1007,328 1000,320 Q1007,312 1013,320" fill="#e67e22" opacity="0.7"/>
+                        <path d="M1000,333 Q992,327 1000,320 Q1008,327 1000,333" fill="#e67e22" opacity="0.5"/>
+                        <path d="M987,320 Q993,312 1000,320 Q993,328 987,320" fill="#e67e22" opacity="0.5"/>
+                    </g>
+                    <circle cx="1000" cy="320" r="5" fill="#e67e22"/>
+                    <text x="1000" y="353" text-anchor="middle" font-family="Share Tech Mono" font-size="7" fill="#e67e22">HWP</text>
+                </g>
+                <!-- Boiler/Heater symbol -->
+                <g>
+                    <rect x="960" y="360" width="80" height="24" fill="#fde8d8" stroke="#e67e22" stroke-width="1.5" rx="3"/>
+                    <text x="1000" y="376" text-anchor="middle" font-family="Rajdhani" font-size="8" fill="#e67e22" font-weight="700">BOILER</text>
+                </g>
+                <!-- HW pipe to heating coil -->
+                <line x1="950" y1="340" x2="880" y2="340" stroke="#e67e22" stroke-width="3" stroke-dasharray="5 4"/>
+                <line x1="880" y1="340" x2="880" y2="345" stroke="#e67e22" stroke-width="2" stroke-dasharray="4 3"/>
+                <text x="910" y="335" text-anchor="middle" font-family="Share Tech Mono" font-size="7" fill="#e67e22">HHW</text>
+
+                <!-- ================================================================ -->
+                <!-- OUTSIDE AIR INTAKE (left side, top half)                        -->
+                <!-- ================================================================ -->
+                <!-- OA duct background -->
+                <rect x="10" y="195" width="220" height="36" fill="#e8f5eb" rx="4"/>
+                <!-- OA flow animated -->
+                <line x1="10" y1="213" x2="225" y2="213" stroke="#3DCD58" stroke-width="2" stroke-dasharray="8 5" class="duct-air outside"/>
+                <!-- OA arrow label -->
+                <text x="12" y="190" font-family="Rajdhani" font-size="10" fill="#3DCD58" font-weight="700">OUTSIDE AIR INTAKE</text>
+                <!-- OA arrow -->
+                <polygon points="15,207 15,219 26,213" fill="#3DCD58" opacity="0.7"/>
+                <polygon points="35,207 35,219 46,213" fill="#3DCD58" opacity="0.5"/>
+
+                <!-- OA Temperature sensor -->
+                <g>
+                    <rect x="12" y="237" width="34" height="20" fill="#f5f5f5" stroke="#3DCD58" stroke-width="1" rx="2"/>
+                    <text x="29" y="246" text-anchor="middle" font-family="Share Tech Mono" font-size="7" fill="#3DCD58">OAT</text>
+                    <text x="29" y="254" text-anchor="middle" font-family="Share Tech Mono" font-size="8" fill="#3DCD58" font-weight="700" id="oat-disp">35°C</text>
+                </g>
+
+                <!-- OA Damper (Economizer) -->
+                <g id="oa-damper">
+                    <rect x="65" y="197" width="36" height="32" fill="#f5f5f5" stroke="#3DCD58" stroke-width="1.5" rx="3"/>
+                    <text x="83" y="192" text-anchor="middle" fill="#3DCD58" font-family="Rajdhani" font-size="8" font-weight="700">OA DAMPER</text>
+                    <text x="83" y="184" text-anchor="middle" fill="#757575" font-family="Rajdhani" font-size="7">(Economizer)</text>
+                    <!-- Damper blades -->
+                    <line id="oad-blade1" x1="71" y1="213" x2="99" y2="213" stroke="#3DCD58" stroke-width="2.5" stroke-linecap="round"/>
+                    <line id="oad-blade2" x1="71" y1="205" x2="99" y2="221" stroke="#3DCD58" stroke-width="1.5" stroke-linecap="round" opacity="0.4"/>
+                    <!-- % label + bar -->
+                    <text x="83" y="243" text-anchor="middle" font-family="Share Tech Mono" font-size="8" fill="#3DCD58" id="oad-pct">20%</text>
+                    <!-- Vertical open/close bar -->
+                    <rect x="107" y="197" width="8" height="32" fill="#e0e0e0" rx="2"/>
+                    <rect id="oad-bar" x="107" y="221" width="8" height="8" fill="#3DCD58" rx="2"/>
+                </g>
+
+                <!-- ================================================================ -->
+                <!-- AHU INTERNALS                                                    -->
+                <!-- ================================================================ -->
+
+                <!-- Mixing Box -->
+                <rect x="220" y="190" width="45" height="170" fill="#e8f5eb" stroke="#3DCD58" stroke-width="1.5" rx="0"/>
+                <text x="242" y="278" text-anchor="middle" font-family="Rajdhani" font-size="8" fill="#1a7a30" font-weight="700" writing-mode="tb">MIXING BOX</text>
+                <text x="242" y="370" text-anchor="middle" font-family="Share Tech Mono" font-size="7" fill="#2db34a" id="mat-disp">MAT:32°C</text>
+
+                <!-- Pre-Filter -->
+                <g id="pre-filter">
+                    <rect x="273" y="200" width="22" height="150" fill="#f0fff4" stroke="#3DCD58" stroke-width="1" rx="2"/>
+                    <text x="284" y="196" text-anchor="middle" font-family="Rajdhani" font-size="7" fill="#757575">PRE</text>
+                    <text x="284" y="189" text-anchor="middle" font-family="Rajdhani" font-size="7" fill="#757575">FILTER</text>
+                    <line x1="280" y1="210" x2="280" y2="344" stroke="#3DCD58" stroke-width="1.5" opacity="0.5"/>
+                    <line x1="284" y1="210" x2="284" y2="344" stroke="#3DCD58" stroke-width="1.5" opacity="0.5"/>
+                    <line x1="288" y1="210" x2="288" y2="344" stroke="#3DCD58" stroke-width="1.5" opacity="0.5"/>
+                    <line x1="292" y1="210" x2="292" y2="344" stroke="#3DCD58" stroke-width="1.5" opacity="0.5"/>
+                    <text x="284" y="360" text-anchor="middle" font-family="Share Tech Mono" font-size="6" fill="#757575" id="filt1-dp">ΔP:45Pa</text>
+                </g>
+
+                <!-- Cooling Coil & Valve -->
+                <g id="cooling-coil">
+                    <rect x="303" y="200" width="80" height="150" fill="#eaf6fd" stroke="#1a6bab" stroke-width="1.5" rx="3" filter="url(#glow-blu)"/>
+                    <text x="343" y="193" text-anchor="middle" fill="#1a6bab" font-family="Rajdhani" font-size="8" font-weight="700">COOLING COIL</text>
+                    <text x="343" y="185" text-anchor="middle" fill="#1a6bab" font-family="Rajdhani" font-size="7">&amp; VALVE</text>
+                    <!-- Zigzag coil pattern (vertical) -->
+                    <polyline points="320,215 328,225 320,235 328,245 320,255 328,265 320,275 328,285 320,295 328,305 320,315 328,325 320,335" fill="none" stroke="#1a6bab" stroke-width="2"/>
+                    <polyline points="330,215 338,225 330,235 338,245 330,255 338,265 330,275 338,285 330,295 338,305 330,315 338,325 330,335" fill="none" stroke="#1a6bab" stroke-width="1.5" opacity="0.5"/>
+                    <polyline points="345,215 353,225 345,235 353,245 345,255 353,265 345,275 353,285 345,295 353,305 345,315 353,325 345,335" fill="none" stroke="#1a6bab" stroke-width="2"/>
+                    <polyline points="355,215 363,225 355,235 363,245 355,255 363,265 355,275 363,285 355,295 363,305 355,315 363,325 355,335" fill="none" stroke="#1a6bab" stroke-width="1.5" opacity="0.5"/>
+                    <!-- Valve symbol -->
+                    <polygon points="320,355 343,345 343,355 366,345 366,355 343,365 343,355" fill="#1a6bab" opacity="0.4"/>
+                    <text x="343" y="376" text-anchor="middle" font-family="Share Tech Mono" font-size="7" fill="#1a6bab" id="coil-status">ACTIVE</text>
+                </g>
+
+                <!-- Supply Fan (AHU) -->
+                <g id="supply-fan">
+                    <circle cx="460" cy="275" r="50" fill="#f0faf2" stroke="#1a7a30" stroke-width="2" filter="url(#glow-grn)"/>
+                    <text x="460" y="188" text-anchor="middle" fill="#1a7a30" font-family="Rajdhani" font-size="10" font-weight="700">SUPPLY FAN</text>
+                    <text x="460" y="199" text-anchor="middle" fill="#757575" font-family="Rajdhani" font-size="8">(Air Handler Unit)</text>
+                    <g id="sf-blades" style="transform-origin:460px 275px">
+                        <line x1="460" y1="228" x2="460" y2="248" stroke="#1a7a30" stroke-width="3.5" stroke-linecap="round"/>
+                        <line x1="460" y1="302" x2="460" y2="322" stroke="#1a7a30" stroke-width="3.5" stroke-linecap="round"/>
+                        <line x1="413" y1="275" x2="433" y2="275" stroke="#1a7a30" stroke-width="3.5" stroke-linecap="round"/>
+                        <line x1="487" y1="275" x2="507" y2="275" stroke="#1a7a30" stroke-width="3.5" stroke-linecap="round"/>
+                        <line x1="427" y1="242" x2="441" y2="256" stroke="#1a7a30" stroke-width="3" stroke-linecap="round"/>
+                        <line x1="479" y1="294" x2="493" y2="308" stroke="#1a7a30" stroke-width="3" stroke-linecap="round"/>
+                        <line x1="493" y1="242" x2="479" y2="256" stroke="#1a7a30" stroke-width="3" stroke-linecap="round"/>
+                        <line x1="441" y1="294" x2="427" y2="308" stroke="#1a7a30" stroke-width="3" stroke-linecap="round"/>
+                    </g>
+                    <circle cx="460" cy="275" r="8" fill="#1a7a30" opacity="0.6"/>
+                    <!-- Speed bar below fan -->
+                    <text x="460" y="338" text-anchor="middle" font-family="Share Tech Mono" font-size="8" fill="#757575">SPD:</text>
+                    <text x="460" y="349" text-anchor="middle" font-family="Share Tech Mono" font-size="9" fill="#1a7a30" font-weight="700" id="sfan-spd">100%</text>
+                    <rect x="418" y="352" width="84" height="6" fill="#e0e0e0" rx="3"/>
+                    <rect id="sf-bar" x="418" y="352" width="84" height="6" fill="#3DCD58" rx="3"/>
+                </g>
+
+                <!-- HEPA Filter -->
+                <g id="hepa-filter">
+                    <rect x="518" y="200" width="22" height="150" fill="#f0fff4" stroke="#2db34a" stroke-width="1" rx="2"/>
+                    <text x="529" y="196" text-anchor="middle" font-family="Rajdhani" font-size="7" fill="#757575">HEPA</text>
+                    <text x="529" y="189" text-anchor="middle" font-family="Rajdhani" font-size="7" fill="#757575">FILTER</text>
+                    <line x1="524" y1="210" x2="524" y2="344" stroke="#2db34a" stroke-width="1.5" opacity="0.6"/>
+                    <line x1="528" y1="210" x2="528" y2="344" stroke="#2db34a" stroke-width="1.5" opacity="0.4"/>
+                    <line x1="532" y1="210" x2="532" y2="344" stroke="#2db34a" stroke-width="1.5" opacity="0.6"/>
+                    <line x1="536" y1="210" x2="536" y2="344" stroke="#2db34a" stroke-width="1.5" opacity="0.4"/>
+                    <text x="529" y="360" text-anchor="middle" font-family="Share Tech Mono" font-size="6" fill="#757575" id="filt2-dp">ΔP:80Pa</text>
+                </g>
+
+                <!-- SAT Sensor -->
+                <g>
+                    <rect x="545" y="260" width="38" height="28" fill="#f5f5f5" stroke="#1a7a30" rx="2"/>
+                    <text x="564" y="272" text-anchor="middle" font-family="Share Tech Mono" font-size="7" fill="#1a7a30">SAT</text>
+                    <text x="564" y="283" text-anchor="middle" font-family="Share Tech Mono" font-size="9" fill="#1a7a30" font-weight="700" id="sat-disp">14.5°</text>
+                </g>
+
+                <!-- Supply duct to VAVs (right side of AHU) -->
+                <rect x="680" y="253" width="270" height="44" fill="#e8f5eb" rx="3"/>
+                <line x1="682" y1="275" x2="948" y2="275" stroke="#3DCD58" stroke-width="2" stroke-dasharray="8 5" class="duct-air mixed"/>
+                <text x="810" y="248" text-anchor="middle" font-family="Rajdhani" font-size="9" fill="#1a7a30" font-weight="700">→ SUPPLY TO ROOMS</text>
+
+                <!-- ================================================================ -->
+                <!-- VAV DAMPERS (bottom right of supply duct)                        -->
+                <!-- ================================================================ -->
+                <!-- VAV 1 -->
+                <g id="vav1">
+                    <rect x="720" y="297" width="32" height="40" fill="#fff3e8" stroke="#e67e22" stroke-width="1.5" rx="3"/>
+                    <text x="736" y="293" text-anchor="middle" font-family="Rajdhani" font-size="7" fill="#e67e22" font-weight="700">VAV-1</text>
+                    <line x1="726" y1="317" x2="746" y2="317" stroke="#e67e22" stroke-width="2.5" stroke-linecap="round"/>
+                    <line x1="726" y1="309" x2="746" y2="325" stroke="#e67e22" stroke-width="1.5" stroke-linecap="round" opacity="0.4"/>
+                    <!-- Down arrow to room -->
+                    <line x1="736" y1="337" x2="736" y2="360" stroke="#e67e22" stroke-width="1.5" marker-end="url(#arr-orn)"/>
+                </g>
+                <!-- VAV 2 -->
+                <g id="vav2">
+                    <rect x="778" y="297" width="32" height="40" fill="#fff3e8" stroke="#e67e22" stroke-width="1.5" rx="3"/>
+                    <text x="794" y="293" text-anchor="middle" font-family="Rajdhani" font-size="7" fill="#e67e22" font-weight="700">VAV-2</text>
+                    <line x1="784" y1="317" x2="804" y2="317" stroke="#e67e22" stroke-width="2.5" stroke-linecap="round"/>
+                    <line x1="784" y1="309" x2="804" y2="325" stroke="#e67e22" stroke-width="1.5" stroke-linecap="round" opacity="0.4"/>
+                    <line x1="794" y1="337" x2="794" y2="360" stroke="#e67e22" stroke-width="1.5" marker-end="url(#arr-orn)"/>
+                </g>
+                <!-- VAV 3 -->
+                <g id="vav3">
+                    <rect x="836" y="297" width="32" height="40" fill="#fff3e8" stroke="#e67e22" stroke-width="1.5" rx="3"/>
+                    <text x="852" y="293" text-anchor="middle" font-family="Rajdhani" font-size="7" fill="#e67e22" font-weight="700">VAV-3</text>
+                    <line x1="842" y1="317" x2="862" y2="317" stroke="#e67e22" stroke-width="2.5" stroke-linecap="round"/>
+                    <line x1="842" y1="309" x2="862" y2="325" stroke="#e67e22" stroke-width="1.5" stroke-linecap="round" opacity="0.4"/>
+                    <line x1="852" y1="337" x2="852" y2="360" stroke="#e67e22" stroke-width="1.5" marker-end="url(#arr-orn)"/>
+                </g>
+                <!-- VAV label -->
+                <text x="794" y="375" text-anchor="middle" font-family="Rajdhani" font-size="9" fill="#e67e22" font-weight="700">Dampers (VAVs)</text>
+                <text x="794" y="386" text-anchor="middle" font-family="Rajdhani" font-size="8" fill="#757575">Air to Rooms ↓</text>
+
+                <!-- ================================================================ -->
+                <!-- HEATING COILS & VALVES (far right, supply side)                 -->
+                <!-- ================================================================ -->
+                <g id="heating-coil">
+                    <rect x="900" y="200" width="48" height="153" fill="#fff3e8" stroke="#e67e22" stroke-width="1.5" rx="3" filter="url(#glow-red)"/>
+                    <text x="924" y="194" text-anchor="middle" fill="#e67e22" font-family="Rajdhani" font-size="8" font-weight="700">HEATING</text>
+                    <text x="924" y="186" text-anchor="middle" fill="#e67e22" font-family="Rajdhani" font-size="8" font-weight="700">COIL &amp; VALVE</text>
+                    <!-- Heating element zigzag -->
+                    <polyline points="912,215 918,225 912,235 918,245 912,255 918,265 912,275 918,285 912,295 918,305 912,315 918,325 912,335" fill="none" stroke="#e67e22" stroke-width="2"/>
+                    <polyline points="924,215 930,225 924,235 930,245 924,255 930,265 924,275 930,285 924,295 930,305 924,315 930,325 924,335" fill="none" stroke="#e67e22" stroke-width="1.5" opacity="0.5"/>
+                    <polyline points="934,215 940,225 934,235 940,245 934,255 940,265 934,275 940,285 934,295 940,305 934,315 940,325 934,335" fill="none" stroke="#e67e22" stroke-width="2"/>
+                    <!-- Valve symbol -->
+                    <polygon points="905,350 924,340 924,350 943,340 943,350 924,360 924,350" fill="#e67e22" opacity="0.4"/>
+                    <text x="924" y="370" text-anchor="middle" font-family="Share Tech Mono" font-size="7" fill="#e67e22">HTG-ON</text>
+                </g>
+
+                <!-- ================================================================ -->
+                <!-- ROOM / SPACE BOX                                                -->
+                <!-- ================================================================ -->
+                <g>
+                    <rect x="700" y="418" width="200" height="54" fill="#f0faf2" stroke="#1a7a30" stroke-width="2" rx="6"/>
+                    <text x="800" y="437" text-anchor="middle" font-family="Rajdhani" font-size="11" fill="#1a7a30" font-weight="700">CONDITIONED SPACE</text>
+                    <text x="800" y="451" text-anchor="middle" font-family="Share Tech Mono" font-size="10" fill="#e6a817" font-weight="700" id="space-disp">35.0°C</text>
+                    <text x="800" y="463" text-anchor="middle" font-family="Share Tech Mono" font-size="8" fill="#757575">SP: <tspan fill="#3DCD58" id="sp-disp">25.0°C</tspan></text>
+                </g>
+                <!-- Arrow: supply to room -->
+                <line x1="800" y1="360" x2="800" y2="418" stroke="#1a7a30" stroke-width="2" marker-end="url(#arr-grn)"/>
+
+                <!-- ================================================================ -->
+                <!-- RETURN AIR PATH (bottom of diagram)                             -->
+                <!-- ================================================================ -->
+                <!-- Return duct background -->
+                <rect x="10" y="456" width="690" height="36" fill="#e8f5eb" rx="3"/>
+                <!-- Return flow animated (right to left) -->
+                <line x1="700" y1="474" x2="10" y2="474" stroke="#2db34a" stroke-width="2" stroke-dasharray="8 5" class="duct-air return" style="animation-direction:reverse"/>
+                <text x="355" y="452" text-anchor="middle" font-family="Rajdhani" font-size="9" fill="#2db34a" font-weight="700">← RETURN AIR FROM ROOMS</text>
+
+                <!-- Return air from room down to duct -->
+                <line x1="702" y1="472" x2="702" y2="418" stroke="#2db34a" stroke-width="2" marker-end="url(#arr-orn)" opacity="0.7"/>
+                <text x="716" y="445" font-family="Rajdhani" font-size="8" fill="#2db34a">RA</text>
+
+                <!-- RAT Sensor -->
+                <g>
+                    <rect x="620" y="461" width="38" height="20" fill="#f5f5f5" stroke="#2db34a" stroke-width="1" rx="2"/>
+                    <text x="639" y="470" text-anchor="middle" font-family="Share Tech Mono" font-size="7" fill="#2db34a">RAT</text>
+                    <text x="639" y="479" text-anchor="middle" font-family="Share Tech Mono" font-size="8" fill="#2db34a" font-weight="700" id="rat-disp">28°C</text>
+                </g>
+
+                <!-- Return duct up to AHU mixing box -->
+                <rect x="10" y="360" width="212" height="96" fill="#e8f5eb" rx="0" opacity="0.5"/>
+                <line x1="110" y1="362" x2="110" y2="456" stroke="#2db34a" stroke-width="2" stroke-dasharray="7 5" class="duct-air return" style="animation-direction:reverse"/>
+
+                <!-- ================================================================ -->
+                <!-- RETURN FAN                                                       -->
+                <!-- ================================================================ -->
+                <g id="ra-fan">
+                    <circle cx="110" cy="430" r="28" fill="#f0faf2" stroke="#2db34a" stroke-width="1.5" filter="url(#glow-grn)"/>
+                    <text x="110" y="396" text-anchor="middle" fill="#2db34a" font-family="Rajdhani" font-size="9" font-weight="700">RETURN FAN</text>
+                    <g id="ra-fan-blades" style="transform-origin:110px 430px">
+                        <line x1="110" y1="404" x2="110" y2="418" stroke="#2db34a" stroke-width="3" stroke-linecap="round"/>
+                        <line x1="110" y1="442" x2="110" y2="456" stroke="#2db34a" stroke-width="3" stroke-linecap="round"/>
+                        <line x1="84" y1="430" x2="98" y2="430" stroke="#2db34a" stroke-width="3" stroke-linecap="round"/>
+                        <line x1="122" y1="430" x2="136" y2="430" stroke="#2db34a" stroke-width="3" stroke-linecap="round"/>
+                        <line x1="92" y1="412" x2="100" y2="420" stroke="#2db34a" stroke-width="2.5" stroke-linecap="round"/>
+                        <line x1="120" y1="440" x2="128" y2="448" stroke="#2db34a" stroke-width="2.5" stroke-linecap="round"/>
+                        <line x1="128" y1="412" x2="120" y2="420" stroke="#2db34a" stroke-width="2.5" stroke-linecap="round"/>
+                        <line x1="100" y1="440" x2="92" y2="448" stroke="#2db34a" stroke-width="2.5" stroke-linecap="round"/>
+                    </g>
+                    <circle cx="110" cy="430" r="6" fill="#2db34a" opacity="0.5"/>
+                    <!-- Speed readout + bar -->
+                    <text x="110" y="470" text-anchor="middle" font-family="Share Tech Mono" font-size="8" fill="#757575">SPD:</text>
+                    <text x="110" y="481" text-anchor="middle" font-family="Share Tech Mono" font-size="9" fill="#2db34a" font-weight="700" id="rafan-spd">90%</text>
+                    <rect x="78" y="484" width="64" height="6" fill="#e0e0e0" rx="3"/>
+                    <rect id="rf-bar" x="78" y="484" width="58" height="6" fill="#2db34a" rx="3"/>
+                </g>
+
+                <!-- ================================================================ -->
+                <!-- RA DAMPER & MIXING CONNECTION                                   -->
+                <!-- ================================================================ -->
+                <!-- RA duct up into mixing box -->
+                <rect x="193" y="360" width="30" height="130" fill="#e8f5eb" rx="0" opacity="0.7"/>
+                <line x1="207" y1="362" x2="207" y2="456" stroke="#2db34a" stroke-width="2" stroke-dasharray="7 5" class="duct-air return" style="animation-direction:reverse"/>
+
+                <g id="ra-damper">
+                    <rect x="193" y="390" width="30" height="34" fill="#f5f5f5" stroke="#2db34a" stroke-width="1.5" rx="2"/>
+                    <text x="208" y="386" text-anchor="middle" fill="#2db34a" font-family="Rajdhani" font-size="7" font-weight="700">RA DMPr</text>
+                    <line id="rad-blade1" x1="197" y1="407" x2="219" y2="407" stroke="#2db34a" stroke-width="2.5" stroke-linecap="round"/>
+                    <line id="rad-blade2" x1="197" y1="399" x2="219" y2="415" stroke="#2db34a" stroke-width="1.5" stroke-linecap="round" opacity="0.4"/>
+                    <text x="208" y="436" text-anchor="middle" font-family="Share Tech Mono" font-size="8" fill="#2db34a" id="rad-pct">80%</text>
+                    <!-- Damper % bar (vertical) -->
+                    <rect x="227" y="390" width="7" height="34" fill="#e0e0e0" rx="2"/>
+                    <rect id="rad-bar" x="227" y="404" width="7" height="20" fill="#2db34a" rx="2"/>
+                </g>
+
+                <!-- ================================================================ -->
+                <!-- EXHAUST AIR PATH                                                 -->
+                <!-- ================================================================ -->
+                <!-- Exhaust duct branches off return duct -->
+                <rect x="10" y="360" width="150" height="36" fill="#fde8e8" rx="3" opacity="0.8"/>
+                <line x1="155" y1="378" x2="10" y2="378" stroke="#e2001a" stroke-width="2" stroke-dasharray="7 5" class="duct-air exhaust"/>
+                <text x="82" y="356" text-anchor="middle" font-family="Rajdhani" font-size="9" fill="#e2001a" font-weight="700">EXHAUST AIR ←</text>
+
+                <!-- Exhaust Fan -->
+                <g id="exhaust-fan">
+                    <circle cx="300" cy="430" r="24" fill="#fff5f5" stroke="#e2001a" stroke-width="1.5" filter="url(#glow-red)"/>
+                    <text x="300" y="398" text-anchor="middle" fill="#e2001a" font-family="Rajdhani" font-size="9" font-weight="700">EXHAUST FAN</text>
+                    <g id="exh-fan-blades" style="transform-origin:300px 430px">
+                        <line x1="300" y1="408" x2="300" y2="420" stroke="#e2001a" stroke-width="2.5" stroke-linecap="round"/>
+                        <line x1="300" y1="440" x2="300" y2="452" stroke="#e2001a" stroke-width="2.5" stroke-linecap="round"/>
+                        <line x1="278" y1="430" x2="290" y2="430" stroke="#e2001a" stroke-width="2.5" stroke-linecap="round"/>
+                        <line x1="310" y1="430" x2="322" y2="430" stroke="#e2001a" stroke-width="2.5" stroke-linecap="round"/>
+                        <line x1="285" y1="415" x2="292" y2="422" stroke="#e2001a" stroke-width="2" stroke-linecap="round"/>
+                        <line x1="308" y1="438" x2="315" y2="445" stroke="#e2001a" stroke-width="2" stroke-linecap="round"/>
+                        <line x1="315" y1="415" x2="308" y2="422" stroke="#e2001a" stroke-width="2" stroke-linecap="round"/>
+                        <line x1="292" y1="438" x2="285" y2="445" stroke="#e2001a" stroke-width="2" stroke-linecap="round"/>
+                    </g>
+                    <circle cx="300" cy="430" r="5" fill="#e2001a" opacity="0.5"/>
+                    <text x="300" y="462" text-anchor="middle" font-family="Share Tech Mono" font-size="8" fill="#757575">VFD:70%</text>
+                </g>
+
+                <!-- Exhaust duct from exhaust fan left to outlet -->
+                <line x1="276" y1="430" x2="155" y2="430" stroke="#e2001a" stroke-width="15" stroke-linecap="round" opacity="0.15"/>
+                <line x1="276" y1="430" x2="155" y2="430" stroke="#e2001a" stroke-width="2" stroke-dasharray="7 5" class="duct-air exhaust"/>
+
+                <!-- Exhaust connection from return duct tee down to exhaust fan -->
+                <line x1="300" y1="406" x2="300" y2="378" stroke="#e2001a" stroke-width="2" stroke-dasharray="5 4" class="duct-air exhaust" style="animation-direction:normal"/>
+                <!-- Tee junction dot -->
+                <circle cx="300" cy="378" r="5" fill="#e2001a" opacity="0.8"/>
+
+                <!-- Exhaust Damper -->
+                <g id="exhaust-damper">
+                    <rect x="170" y="418" width="30" height="24" fill="#f5f5f5" stroke="#e2001a" stroke-width="1.5" rx="2"/>
+                    <text x="185" y="414" text-anchor="middle" fill="#e2001a" font-family="Rajdhani" font-size="7" font-weight="700">EXH DMP</text>
+                    <line id="exhd-blade1" x1="174" y1="430" x2="196" y2="430" stroke="#e2001a" stroke-width="2.5" stroke-linecap="round"/>
+                    <line id="exhd-blade2" x1="174" y1="424" x2="196" y2="436" stroke="#e2001a" stroke-width="1.5" stroke-linecap="round" opacity="0.4"/>
+                    <text x="185" y="452" text-anchor="middle" font-family="Share Tech Mono" font-size="8" fill="#e2001a" id="exhd-pct">60%</text>
+                </g>
+
+                <!-- Exhaust outlet arrow -->
+                <polygon points="18,372 18,384 10,378" fill="#e2001a"/>
+                <polygon points="30,372 30,384 22,378" fill="#e2001a" opacity="0.6"/>
+                <text x="12" y="394" font-family="Rajdhani" font-size="8" fill="#e2001a" font-weight="700">OUT</text>
+
+                <!-- ================================================================ -->
+                <!-- RELIEF AIR                                                       -->
+                <!-- ================================================================ -->
+                <line x1="207" y1="360" x2="207" y2="322" stroke="#7ddc93" stroke-width="12" stroke-linecap="round" opacity="0.2"/>
+                <line x1="207" y1="360" x2="207" y2="322" stroke="#7ddc93" stroke-width="2" stroke-dasharray="6 4" class="duct-air relief"/>
+                <g id="relief-damper">
+                    <rect x="193" y="300" width="28" height="24" fill="#f5f5f5" stroke="#7ddc93" stroke-width="1.5" rx="2"/>
+                    <text x="207" y="296" text-anchor="middle" fill="#7ddc93" font-family="Rajdhani" font-size="7" font-weight="700">RELIEF</text>
+                    <line x1="197" y1="312" x2="219" y2="312" stroke="#7ddc93" stroke-width="2.5" stroke-linecap="round"/>
+                    <line x1="197" y1="306" x2="219" y2="318" stroke="#7ddc93" stroke-width="1.5" stroke-linecap="round" opacity="0.4"/>
+                    <text x="207" y="336" text-anchor="middle" font-family="Share Tech Mono" font-size="7" fill="#7ddc93" id="reld-pct">20%</text>
+                </g>
+                <text x="228" y="336" font-family="Rajdhani" font-size="7" fill="#7ddc93">↑ RELIEF</text>
+
+                <!-- ================================================================ -->
+                <!-- PARAMETER READOUTS (overlaid on ducts / inline labels)          -->
+                <!-- ================================================================ -->
+                <!-- OAT badge on OA duct -->
+                <rect x="50" y="207" width="14" height="14" fill="#3DCD58" rx="2" opacity="0.15"/>
+
+                <!-- MAT badge in mixing box area -->
+
+                <!-- ================================================================ -->
+                <!-- BORDER LABELS                                                    -->
+                <!-- ================================================================ -->
+                <text x="12" y="501" font-family="Rajdhani" font-size="10" fill="#e2001a" font-weight="700">EXHAUST AIR</text>
+                <text x="12" y="515" font-family="Rajdhani" font-size="8" fill="#757575">← To Atmosphere</text>
+
+                <text x="700" y="501" font-family="Rajdhani" font-size="9" fill="#2db34a">← Air from Rooms</text>
+                <text x="700" y="515" font-family="Rajdhani" font-size="9" fill="#1a7a30">↑ Air to Rooms</text>
+
+                <!-- Final filter before supply exits AHU -->
+                <g id="final-filter">
+                    <rect x="595" y="200" width="20" height="150" fill="#f0fff4" stroke="#3DCD58" stroke-width="1" rx="2"/>
+                    <text x="605" y="196" text-anchor="middle" font-family="Rajdhani" font-size="7" fill="#757575">FINAL</text>
+                    <text x="605" y="189" text-anchor="middle" font-family="Rajdhani" font-size="7" fill="#757575">FILTER</text>
+                    <line x1="601" y1="210" x2="601" y2="344" stroke="#3DCD58" stroke-width="1.5" opacity="0.5"/>
+                    <line x1="605" y1="210" x2="605" y2="344" stroke="#3DCD58" stroke-width="1.5" opacity="0.5"/>
+                    <line x1="609" y1="210" x2="609" y2="344" stroke="#3DCD58" stroke-width="1.5" opacity="0.5"/>
+                    <line x1="613" y1="210" x2="613" y2="344" stroke="#3DCD58" stroke-width="1.5" opacity="0.5"/>
+                    <text x="605" y="360" text-anchor="middle" font-family="Share Tech Mono" font-size="6" fill="#757575" id="filt3-dp">ΔP:30Pa</text>
+                </g>
+
+                <!-- Supply duct from AHU to VAVs  -->
+                <rect x="615" y="253" width="68" height="44" fill="#e8f5eb" rx="0" opacity="0.8"/>
+                <line x1="617" y1="275" x2="682" y2="275" stroke="#3DCD58" stroke-width="2" stroke-dasharray="7 5" class="duct-air mixed"/>
+
+            </svg>
+        </div>
+
+        <!-- SEQUENCE OF OPERATIONS -->
+        <div class="seq-panel">
+            <div class="s-label" style="margin-bottom:12px">Sequence of Operations — Temperature Correction (35°C → 25°C)</div>
+            <div class="seq-steps" id="seq-steps">
+                <!-- Steps injected by JS -->
+            </div>
+        </div>
+
+        <!-- CONTROLS -->
+        <div class="ctrl-grid">
+            <div class="ctrl-card">
+                <div class="ctrl-name">OA Damper Override</div>
+                <input type="range" min="0" max="100" value="20" class="ctrl-slider" id="ctrl-oad" oninput="manualOverride('oad', this.value)">
+                <div class="ctrl-val" id="ctrl-oad-val">20%</div>
+            </div>
+            <div class="ctrl-card">
+                <div class="ctrl-name">RA Damper Override</div>
+                <input type="range" min="0" max="100" value="80" class="ctrl-slider" id="ctrl-rad" oninput="manualOverride('rad', this.value)">
+                <div class="ctrl-val" id="ctrl-rad-val">80%</div>
+            </div>
+            <div class="ctrl-card">
+                <div class="ctrl-name">Supply Fan Speed</div>
+                <input type="range" min="0" max="100" value="100" class="ctrl-slider" id="ctrl-sfs" oninput="manualOverride('sfs', this.value)">
+                <div class="ctrl-val" id="ctrl-sfs-val">100%</div>
+            </div>
+            <div class="ctrl-card">
+                <div class="ctrl-name">Space Temp Setpoint</div>
+                <input type="range" min="18" max="30" value="25" class="ctrl-slider" id="ctrl-sp" oninput="updateSetpoint(this.value)">
+                <div class="ctrl-val" id="ctrl-sp-val">25°C</div>
+            </div>
+        </div>
+    </main>
+</div>
+
+<script>
+    // === STATE ===
+    let state = {
+        spaceTemp: 35.0, setpoint: 25.0, oat: 35.0, rat: 28.5,
+        mat: 32.0, sat: 14.5, co2: 650, humidity: 55,
+        oadPos: 20, radPos: 80, reldPos: 20,
+        sfSpeed: 100, rfSpeed: 90, oafSpeed: 60,
+        seqStep: 0, tick: 0, manualOverrides: {}
+    };
+
+    const SEQ_STEPS = [
+        { n: "01", label: "Detect High Temp", desc: "Space >25°C\nActivate cooling" },
+        { n: "02", label: "Check Economiser", desc: "OAT vs RAT\nSelect mode" },
+        { n: "03", label: "Adjust Dampers", desc: "OA/RA position\noptimize mix" },
+        { n: "04", label: "Energize Coil", desc: "Cooling coil\nactivated" },
+        { n: "05", label: "Ramp Supply Fan", desc: "Increase CFM\nfor faster cool" },
+        { n: "06", label: "Monitor SAT", desc: "SAT target\n13–15°C" },
+        { n: "07", label: "Relief Control", desc: "Relieve\npressure buildup" },
+        { n: "08", label: "Approach SP", desc: "Space temp\nstabilising" },
+    ];
+
+    // Build seq steps
+    const seqDiv = document.getElementById('seq-steps');
+    SEQ_STEPS.forEach((s, i) => {
+        const div = document.createElement('div');
+        div.className = 'seq-step';
+        div.innerHTML = `<div class="seq-box pending-step" id="seq-${i}">
+            <span class="seq-num">${s.n}</span>
+            <div style="font-size:10px;font-weight:700;color:inherit;margin-bottom:3px">${s.label}</div>
+            <div class="seq-desc">${s.desc.replace('\n','<br>')}</div>
+        </div>`;
+        seqDiv.appendChild(div);
+    });
+
+    function setSeqStep(step) {
+        SEQ_STEPS.forEach((_, i) => {
+            const el = document.getElementById(`seq-${i}`);
+            el.className = 'seq-box ' + (i < step ? 'done-step' : i === step ? 'active-step' : 'pending-step');
         });
+    }
 
-        socket.on('disconnect', () => {
-            connStatus.innerHTML = '<span class="w-2 h-2 rounded-full bg-red-400 mr-2 animate-pulse"></span>Disconnected';
-            connStatus.classList.replace('text-green-400', 'text-red-400');
-        });
+    // === LOG ===
+    const log = document.getElementById('soo-log');
+    function addLog(msg, type = 'info') {
+        const ts = new Date().toLocaleTimeString('en-GB', { hour12: false });
+        const div = document.createElement('div');
+        div.className = `log-line ${type}`;
+        div.textContent = `[${ts}] ${msg}`;
+        log.prepend(div);
+        if (log.children.length > 50) log.lastChild.remove();
+    }
 
-        socket.on('co2_update', (data) => {
-            // Update Number
-            valueDisplay.innerText = data.value;
-            statusText.innerText = data.message;
+    // === FAN ANIMATION ===
+    function setFanSpin(id, speed) {
+        const el = document.getElementById(id);
+        if (!el) return;
+        const dur = speed > 0 ? Math.max(0.15, 1.5 - speed / 80) : 999;
+        el.style.animation = speed > 0 ? `spinFan ${dur}s linear infinite` : 'none';
+    }
 
-            // Update Progress Bar % (scaled 400-1200 to 0-100)
-            const percent = ((data.value - 400) / (1200 - 400)) * 100;
-            progressBar.style.width = Math.min(Math.max(percent, 0), 100) + '%';
+    // === UPDATE UI ===
+    function updateUI() {
+        const s = state;
+        // KPIs sidebar
+        document.getElementById('s-oat').textContent = s.oat.toFixed(1);
+        document.getElementById('s-mat').textContent = s.mat.toFixed(1);
+        document.getElementById('s-sat').textContent = s.sat.toFixed(1);
+        document.getElementById('s-rat').textContent = s.rat.toFixed(1);
+        document.getElementById('s-space').textContent = s.spaceTemp.toFixed(1);
+        document.getElementById('s-oad').textContent = Math.round(s.oadPos);
+        document.getElementById('s-rad').textContent = Math.round(s.radPos);
+        document.getElementById('s-reld').textContent = Math.round(s.reldPos);
+        document.getElementById('s-sfs').textContent = Math.round(s.sfSpeed);
+        document.getElementById('s-rfs').textContent = Math.round(s.rfSpeed);
 
-            // Update Colors based on status
-            if (data.status === 'danger') {
-                gaugeBorder.style.borderColor = '#ef4444'; // Red
-                progressBar.style.backgroundColor = '#ef4444';
-                statusText.classList.add('text-red-400');
-                statusText.classList.remove('text-green-400');
-            } else {
-                gaugeBorder.style.borderColor = '#22c55e'; // Green
-                progressBar.style.backgroundColor = '#3b82f6'; // Blue
-                statusText.classList.add('text-green-400');
-                statusText.classList.remove('text-red-400');
+        // Metric cards
+        document.getElementById('m-space').textContent = s.spaceTemp.toFixed(1);
+        document.getElementById('m-oat').textContent = s.oat.toFixed(1);
+        document.getElementById('m-sat').textContent = s.sat.toFixed(1);
+        document.getElementById('m-co2').textContent = s.co2;
+
+        // SVG displays — new IDs
+        document.getElementById('oat-disp').textContent = s.oat.toFixed(0) + '°C';
+        document.getElementById('rat-disp').textContent = s.rat.toFixed(0) + '°C';
+        document.getElementById('mat-disp').textContent = 'MAT:' + s.mat.toFixed(0) + '°C';
+        document.getElementById('sat-disp').textContent = s.sat.toFixed(1) + '°';
+        document.getElementById('space-disp').textContent = s.spaceTemp.toFixed(1) + '°C';
+        document.getElementById('sp-disp').textContent = s.setpoint.toFixed(1) + '°C';
+        document.getElementById('oad-pct').textContent = Math.round(s.oadPos) + '%';
+        document.getElementById('rad-pct').textContent = Math.round(s.radPos) + '%';
+        document.getElementById('reld-pct').textContent = Math.round(s.reldPos) + '%';
+        document.getElementById('exhd-pct').textContent = Math.round(s.reldPos) + '%';
+        document.getElementById('sfan-spd').textContent = Math.round(s.sfSpeed) + '%';
+        document.getElementById('rafan-spd').textContent = Math.round(s.rfSpeed) + '%';
+
+        // === SPEED BARS (supply fan, return fan) ===
+        const sfBar = document.getElementById('sf-bar');
+        if (sfBar) sfBar.setAttribute('width', Math.round(84 * s.sfSpeed / 100));
+        const rfBar = document.getElementById('rf-bar');
+        if (rfBar) rfBar.setAttribute('width', Math.round(64 * s.rfSpeed / 100));
+
+        // === DAMPER % BARS (vertical fill) ===
+        // OA damper bar: full height 32px at y=197, bar fills from bottom
+        const oadBar = document.getElementById('oad-bar');
+        if (oadBar) {
+            const h = Math.round(32 * s.oadPos / 100);
+            oadBar.setAttribute('y', 197 + 32 - h);
+            oadBar.setAttribute('height', h);
+        }
+        // RA damper bar
+        const radBar = document.getElementById('rad-bar');
+        if (radBar) {
+            const h = Math.round(34 * s.radPos / 100);
+            radBar.setAttribute('y', 390 + 34 - h);
+            radBar.setAttribute('height', h);
+        }
+
+        // Color space temp
+        const spEl = document.getElementById('m-space');
+        if (s.spaceTemp > s.setpoint + 2) spEl.style.color = 'var(--red)';
+        else if (s.spaceTemp > s.setpoint + 0.5) spEl.style.color = 'var(--yellow)';
+        else spEl.style.color = 'var(--green)';
+
+        // Color space-disp in SVG
+        const sdEl = document.getElementById('space-disp');
+        if (sdEl) {
+            if (s.spaceTemp > s.setpoint + 2) sdEl.setAttribute('fill', '#e2001a');
+            else if (s.spaceTemp > s.setpoint + 0.5) sdEl.setAttribute('fill', '#e6a817');
+            else sdEl.setAttribute('fill', '#3DCD58');
+        }
+
+        // Fan speeds
+        setFanSpin('sf-blades', s.sfSpeed);
+        setFanSpin('ra-fan-blades', s.rfSpeed);
+        setFanSpin('ct-fan-blades', 80);
+        setFanSpin('cwp-blades', 80);
+        setFanSpin('hwp-blades', 70);
+        setFanSpin('exh-fan-blades', 70);
+
+        // Damper blade rotation visual — updated centre coords
+        updateDamperVisual('oad-blade1', 'oad-blade2', s.oadPos, 83, 213);
+        updateDamperVisual('rad-blade1', 'rad-blade2', s.radPos, 208, 407);
+
+        // Economiser status
+        const econOff = s.oat >= s.rat;
+        document.getElementById('m-oat-sub').textContent = econOff ? 'Economiser: OFF' : 'Economiser: ACTIVE';
+    }
+
+    function updateDamperVisual(blade1Id, blade2Id, pos, cx, cy) {
+        const angle = (pos / 100) * 80; // 0 = closed (angled), 80deg = open
+        const rad = angle * Math.PI / 180;
+        const L = 16;
+        const b1 = document.getElementById(blade1Id);
+        const b2 = document.getElementById(blade2Id);
+        if (!b1) return;
+        const dx = Math.cos(rad) * L;
+        const dy = Math.sin(rad) * L;
+        b1.setAttribute('x1', cx - dx); b1.setAttribute('y1', cy - dy);
+        b1.setAttribute('x2', cx + dx); b1.setAttribute('y2', cy + dy);
+        if (b2) {
+            b2.setAttribute('x1', cx - dx * 0.8); b2.setAttribute('y1', cy - dy * 0.8 - 6);
+            b2.setAttribute('x2', cx + dx * 0.8); b2.setAttribute('y2', cy + dy * 0.8 + 6);
+        }
+    }
+
+    // === SEQUENCE OF OPERATIONS: 35°C → 25°C ===
+    function runSequence() {
+        const s = state;
+        const error = s.spaceTemp - s.setpoint;
+        const tick = s.tick;
+
+        // Step 0: Detect
+        if (tick === 0) {
+            setSeqStep(0);
+            addLog(`ALARM: Space temp ${s.spaceTemp.toFixed(1)}°C | Setpoint ${s.setpoint}°C | Error: ${error.toFixed(1)}°C`, 'warn');
+            addLog('Initiating cooling sequence...', 'info');
+        }
+
+        // Step 1: Economiser check (OAT 35 > RAT 28.5, no free-cooling possible)
+        if (tick === 1) {
+            setSeqStep(1);
+            addLog(`Economiser check: OAT ${s.oat.toFixed(1)}°C vs RAT ${s.rat.toFixed(1)}°C`, 'info');
+            if (s.oat >= s.rat) {
+                addLog('OAT ≥ RAT — Economiser DISABLED. Mechanical cooling required.', 'warn');
+                document.getElementById('m-oat-sub').textContent = 'Economiser: DISABLED';
             }
-        });
-    </script>
+        }
+
+        // Step 2: Damper adjustment — minimize OA, maximize RA recirculation
+        if (tick >= 2 && tick < 8) {
+            setSeqStep(2);
+            if (!state.manualOverrides['oad']) state.oadPos = Math.max(20, state.oadPos - 2);  // Min OA (code compliance min 20%)
+            if (!state.manualOverrides['rad']) state.radPos = Math.min(80, state.radPos + 2);  // Max recirculation
+            if (tick === 2) addLog('Dampers adjusting: OA→20% (min fresh air), RA→80%', 'action');
+        }
+
+        // Step 3: Activate cooling coil
+        if (tick === 4) {
+            setSeqStep(3);
+            addLog('Cooling coil ENERGIZED — chilled water valve open 100%', 'action');
+        }
+
+        // Step 4: Ramp supply fan
+        if (tick >= 5 && tick < 10) {
+            setSeqStep(4);
+            if (!state.manualOverrides['sfs']) state.sfSpeed = Math.min(100, state.sfSpeed + 5);
+            if (tick === 5) addLog('Supply fan ramping to 100% for max CFM', 'action');
+        }
+
+        // Step 5: Monitor SAT — target 13-15°C for fast cool-down
+        if (tick >= 6) {
+            setSeqStep(5);
+            const sat = 16 - (state.sfSpeed / 100) * 3 + (Math.random() - 0.5) * 0.4;
+            state.sat = Math.max(12, sat);
+            if (tick % 5 === 0) addLog(`SAT monitoring: ${state.sat.toFixed(1)}°C (target 13–15°C)`, 'info');
+        }
+
+        // Step 6: Relief damper — open if static pressure builds
+        if (tick >= 8) {
+            setSeqStep(6);
+            state.reldPos = 20 + (state.sfSpeed - 80) * 1.2;
+            if (tick === 8) addLog('Relief damper modulating for pressure control', 'action');
+        }
+
+        // Step 7: Space temp cooling simulation
+        if (tick >= 3) {
+            const coolRate = (state.sfSpeed / 100) * 0.08 + 0.02;
+            state.spaceTemp = Math.max(state.setpoint, state.spaceTemp - coolRate + (Math.random() - 0.5) * 0.05);
+            state.rat = state.spaceTemp - 0.5 + Math.random() * 0.3;
+            state.mat = (state.oadPos / 100) * state.oat + (state.radPos / 100) * state.rat;
+
+            if (tick % 10 === 0) addLog(`Space temp: ${state.spaceTemp.toFixed(1)}°C → ${state.setpoint}°C setpoint`, 'info');
+        }
+
+        // Step 8: Approaching setpoint
+        if (state.spaceTemp <= state.setpoint + 1.5) {
+            setSeqStep(7);
+            if (tick % 8 === 0) addLog(`Approaching setpoint — Δ${(state.spaceTemp - state.setpoint).toFixed(1)}°C`, 'action');
+        }
+
+        // Setpoint achieved
+        if (state.spaceTemp <= state.setpoint + 0.2) {
+            setSeqStep(8);
+            if (tick % 15 === 0) addLog('✓ Setpoint ACHIEVED — steady state control active', 'action');
+            // Throttle back fan to maintain
+            if (!state.manualOverrides['sfs']) state.sfSpeed = Math.max(60, state.sfSpeed - 1);
+        }
+
+        // OAT adds slight noise
+        state.oat = 35 + (Math.random() - 0.5) * 0.3;
+        state.co2 = Math.max(400, Math.min(1200, state.co2 + (Math.random() - 0.5) * 20));
+
+        state.tick++;
+        updateUI();
+    }
+
+    // === MANUAL CONTROLS ===
+    function manualOverride(key, val) {
+        const v = parseInt(val);
+        state.manualOverrides[key] = true;
+        if (key === 'oad') { state.oadPos = v; document.getElementById('ctrl-oad-val').textContent = v + '%'; addLog(`Manual: OA Damper → ${v}%`, 'warn'); }
+        if (key === 'rad') { state.radPos = v; document.getElementById('ctrl-rad-val').textContent = v + '%'; addLog(`Manual: RA Damper → ${v}%`, 'warn'); }
+        if (key === 'sfs') { state.sfSpeed = v; document.getElementById('ctrl-sfs-val').textContent = v + '%'; addLog(`Manual: Supply Fan → ${v}%`, 'warn'); }
+        updateUI();
+        // Release manual override after 15s
+        setTimeout(() => { delete state.manualOverrides[key]; addLog(`Auto control resumed: ${key.toUpperCase()}`, 'info'); }, 15000);
+    }
+
+    function updateSetpoint(val) {
+        state.setpoint = parseFloat(val);
+        document.getElementById('ctrl-sp-val').textContent = val + '°C';
+        addLog(`Setpoint changed to ${val}°C`, 'action');
+    }
+
+    // === CLOCK ===
+    function updateClock() {
+        document.getElementById('clock').textContent = new Date().toLocaleString('en-GB', { day:'2-digit', month:'short', hour:'2-digit', minute:'2-digit', second:'2-digit', hour12: false });
+    }
+    setInterval(updateClock, 1000);
+    updateClock();
+
+    // === MQTT SIMULATOR (mimics Flask /data endpoint) ===
+    function fetchData() {
+        // Simulate MQTT data arriving (in real deployment, this fetches from Flask /data)
+        // Since we're standalone, we use simulation
+    }
+
+    // === START ===
+    addLog('AuraNode BMS v2.0 — AHU-01 Controller ONLINE', 'action');
+    addLog('Connecting MQTT broker.hivemq.com:1883...', 'info');
+    setTimeout(() => addLog('MQTT connected — topics subscribed', 'action'), 800);
+    setTimeout(() => addLog('BACnet/IP device registered [Device ID: 1001]', 'info'), 1600);
+    setTimeout(() => addLog(`ALERT: Space temp ${state.spaceTemp}°C exceeds setpoint ${state.setpoint}°C`, 'error'), 2400);
+
+    setInterval(runSequence, 1500);
+    updateUI();
+</script>
 </body>
 </html>
